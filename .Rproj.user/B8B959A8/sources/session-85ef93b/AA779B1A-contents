@@ -1,0 +1,92 @@
+code <- '# ── R/04_comorbid_analysis.R ──────────────────────────────────
+source("config.R")
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+df_scored    <- readRDS(file.path(DIR_PROCESSED, "df_scored.rds"))
+product_risk <- readRDS(file.path(DIR_PROCESSED, "product_risk.rds"))
+
+ingredient_db <- df_scored |>
+  filter(!is.na(mechanism)) |>
+  distinct(ingredient, risk_level, risk_score, mechanism, conditions) |>
+  mutate(condition_list = str_split(conditions, ";")) |>
+  unnest(condition_list) |>
+  rename(condition = condition_list) |>
+  mutate(condition = str_squish(condition))
+
+analyze_comorbid <- function(cond1, cond2, label) {
+  risky_cond1 <- ingredient_db |> filter(condition == cond1, risk_score > 0) |> pull(ingredient)
+  risky_cond2 <- ingredient_db |> filter(condition == cond2, risk_score > 0) |> pull(ingredient)
+  both_risky  <- intersect(risky_cond1, risky_cond2)
+  only_cond1  <- setdiff(risky_cond1, risky_cond2)
+  only_cond2  <- setdiff(risky_cond2, risky_cond1)
+  n_products_both <- df_scored |> filter(ingredient %in% both_risky) |> distinct(product_id) |> nrow()
+  cat(sprintf("\n== %s ==\n", label))
+  cat(sprintf("Her iki durumda sorunlu: %d\n", length(both_risky)))
+  cat(sprintf("Sadece %s sorunlu: %d\n", cond1, length(only_cond1)))
+  cat(sprintf("Sadece %s sorunlu: %d\n", cond2, length(only_cond2)))
+  cat(sprintf("Bu icerikleri kullanan urun: %d\n", n_products_both))
+  cat(paste(" -", both_risky, collapse = "\n"), "\n")
+  df_scored |>
+    filter(ingredient %in% both_risky) |>
+    group_by(product_id, product_name, brands, source_category) |>
+    summarise(
+      n_conflict_ingredients = n_distinct(ingredient),
+      conflict_ingredients   = paste(unique(ingredient), collapse = "; "),
+      conflict_score         = sum(risk_score, na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    arrange(desc(conflict_score)) |>
+    mutate(comorbid_profile = label)
+}
+
+results <- list(
+  analyze_comorbid("rosacea",           "melasma",  "Rosacea + Melasma"),
+  analyze_comorbid("acne",              "melasma",  "Acne + Melasma"),
+  analyze_comorbid("acne",              "rosacea",  "Acne + Rosacea"),
+  analyze_comorbid("atopic_dermatitis", "acne",     "Atopik Dermatit + Acne")
+)
+
+comorbid_conflicts <- bind_rows(results)
+
+cat("\n── Profil bazli ortalama catisma skoru ──\n")
+comorbid_conflicts |>
+  group_by(comorbid_profile) |>
+  summarise(n_products = n(), avg_conflict = round(mean(conflict_score), 2), max_conflict = max(conflict_score), .groups = "drop") |>
+  arrange(desc(avg_conflict)) |>
+  print()
+
+cat("\n── En yuksek catisma skorlu urunler ──\n")
+comorbid_conflicts |>
+  group_by(product_id, product_name, brands) |>
+  summarise(profiles_affected = n_distinct(comorbid_profile), total_conflict = sum(conflict_score), .groups = "drop") |>
+  arrange(desc(total_conflict)) |>
+  head(10) |>
+  print()
+
+cat("\n── Sinerjik icerikler ──\n")
+safe_ingredients <- df_scored |>
+  filter(risk_level == "safe", risk_score == 0, !is.na(mechanism)) |>
+  distinct(ingredient, mechanism, conditions)
+
+for (profile in names(COMORBID_PROFILES)) {
+  conds <- COMORBID_PROFILES[[profile]]
+  label <- paste(conds, collapse = " + ")
+  safe_for_both <- safe_ingredients |>
+    filter(str_detect(conditions, conds[1]) & str_detect(conditions, conds[2]))
+  cat(sprintf("\n%s:\n", label))
+  if (nrow(safe_for_both) > 0) {
+    print(safe_for_both |> select(ingredient, mechanism))
+  } else {
+    cat("  DB de kayitli sinerjik icerik yok\n")
+  }
+}
+
+saveRDS(comorbid_conflicts, file.path(DIR_PROCESSED, "comorbid_conflicts.rds"))
+saveRDS(ingredient_db,      file.path(DIR_PROCESSED, "ingredient_db_long.rds"))
+message("\ncomorbid_conflicts.rds kaydedildi.")
+message("Hazir: 05_clustering.R")'
+
+writeLines(code, "R/04_comorbid_analysis.R")
+file.exists("R/04_comorbid_analysis.R")
