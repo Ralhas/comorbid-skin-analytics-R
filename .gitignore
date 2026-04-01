@@ -1,0 +1,9 @@
+.Rproj.user/
+.Rhistory
+.RData
+.DS_Store
+renv/library/
+renv/staging/
+renv/sandbox/
+*.tmp
+*.log
